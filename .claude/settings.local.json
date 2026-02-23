@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(npx shadcn@latest init:*)",
+      "Bash(npx shadcn@latest add button card input label table badge dialog select textarea tabs separator dropdown-menu sheet sidebar avatar skeleton chart tooltip command popover calendar switch form alert-dialog scroll-area checkbox -y)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run dev:*)",
+      "Bash(taskkill:*)",
+      "Bash(netstat:*)",
+      "WebFetch(domain:localhost)",
+      "Bash(curl:*)",
+      "Bash(ls:*)",
+      "Bash(npx tsc:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose up:*)",
+      "Bash(node -e:*)",
+      "Bash(docker compose restart:*)"
+    ]
+  }
+}

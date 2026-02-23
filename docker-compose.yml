@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════
+# LOCAL DEVELOPMENT — includes Mongo + Redis containers
+# Usage:
+#   docker compose up -d
+#   docker compose --profile setup run --rm seed   (first time only)
+#   docker compose up -d --scale worker=2          (scale workers)
+# ═══════════════════════════════════════════════════════
+
+services:
+  # ── MongoDB ──
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── API Server ──
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/notification_service
+      - REDIS_URL=redis://redis:6379
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Background Worker ──
+  worker:
+    build: .
+    command: ["node", "dist/worker.js"]
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/notification_service
+      - REDIS_URL=redis://redis:6379
+
+  # ── Seed Admin User (run once) ──
+  seed:
+    build: .
+    command: ["node", "dist/scripts/seed-admin.js"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/notification_service
+    profiles:
+      - setup
+
+volumes:
+  mongo_data:
+  redis_data:
