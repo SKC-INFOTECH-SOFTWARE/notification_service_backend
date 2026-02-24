@@ -11,7 +11,7 @@ const AUTH_TAG_LENGTH = 16;
  */
 export function generateApiKey(): string {
   const random = crypto.randomBytes(20).toString('hex');
-  return `ns_live_${random}`;
+  return `ns_skc_${random}`;
 }
 
 /**
