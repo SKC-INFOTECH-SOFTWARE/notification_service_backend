@@ -1,0 +1,39 @@
+# ═══════════════════════════════════════════════════════════
+# CI Pipeline - Runs on every push & pull request
+# Validates code compiles correctly
+# ═══════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build & Type Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Verify dist output
+        run: |
+          test -f dist/server.js || (echo "dist/server.js not found" && exit 1)
+          test -f dist/worker.js || (echo "dist/worker.js not found" && exit 1)
+          echo "Build artifacts verified successfully"

@@ -11,7 +11,7 @@ export function getRedisConfig(): RedisConnectionConfig {
   return {
     host: config.redis.host,
     port: config.redis.port,
-    password: config.redis.password,
+    password: config.redis.password || undefined,
     maxRetriesPerRequest: null, // required by BullMQ
   };
 }
