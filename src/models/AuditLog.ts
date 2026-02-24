@@ -30,4 +30,7 @@ AuditLogSchema.index({ clientId: 1, createdAt: -1 });
 AuditLogSchema.index({ action: 1, createdAt: -1 });
 AuditLogSchema.index({ createdAt: -1 });
 
+// Auto-delete audit logs after 20 days to save disk space
+AuditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 20 * 24 * 60 * 60 });
+
 export const AuditLog = mongoose.model<IAuditLog>('AuditLog', AuditLogSchema);

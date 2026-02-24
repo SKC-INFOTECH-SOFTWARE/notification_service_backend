@@ -50,4 +50,7 @@ NotificationSchema.index({ clientId: 1, appId: 1, userId: 1, readAt: 1 });
 NotificationSchema.index({ status: 1 });
 NotificationSchema.index({ createdAt: -1 });
 
+// Auto-delete notifications after 20 days to save disk space
+NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 20 * 24 * 60 * 60 });
+
 export const Notification = mongoose.model<INotification>('Notification', NotificationSchema);
