@@ -7,11 +7,6 @@
 #   VPS_SSH_KEY    - Private SSH key (full PEM content)
 #   VPS_PORT       - SSH port (e.g. 22)
 #   APP_DIR        - Project path on VPS (e.g. /root/notification-service)
-#
-# ROLLBACK STRATEGY:
-#   Before deploy → src/ is snapshotted to src.backup/
-#   Health check fails → backup restored, containers restarted from old image
-#   Backup deleted only after confirmed healthy deploy
 # ═══════════════════════════════════════════════════════════
 
 name: Deploy to VPS
@@ -66,87 +61,79 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          command_timeout: 30m
+          command_timeout: 20m
           script: |
             set -e
             cd ${{ secrets.APP_DIR }}
 
-            # ── Read port from .env ──────────────────────────────────────
             APP_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
             APP_PORT=${APP_PORT:-5000}
 
-            # ── Use docker compose v2 (plugin) — NOT docker-compose v1 ──
-            # v1 (docker-compose) has a ContainerConfig KeyError bug with
-            # newer Docker Engine versions. v2 is already installed as the
-            # Docker CLI plugin on any modern VPS.
             COMPOSE="docker compose -f docker-compose.prod.yml"
 
-            # ── Health check helper ──────────────────────────────────────
+            # ── Health check with visible diagnostics ────────────────────
             wait_for_health() {
-              echo "Waiting for health check on port $APP_PORT..."
-              for i in $(seq 1 18); do
-                if curl -sf http://localhost:$APP_PORT/health > /dev/null 2>&1; then
-                  echo "Health check passed (attempt $i/18)"
+              echo "Waiting for http://localhost:$APP_PORT/health ..."
+              for i in $(seq 1 12); do
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$APP_PORT/health 2>/dev/null || echo "000")
+                CONTAINER_STATUS=$($COMPOSE ps api --format "{{.Status}}" 2>/dev/null || echo "unknown")
+                echo "  attempt $i/12 — HTTP $HTTP_CODE — container: $CONTAINER_STATUS"
+
+                if [ "$HTTP_CODE" = "200" ]; then
                   return 0
                 fi
-                echo "  attempt $i/18 — not ready, waiting 5s..."
+
+                # Print logs every 3 attempts so we can see startup errors
+                if [ $((i % 3)) -eq 0 ]; then
+                  echo "  --- api logs (last 10 lines) ---"
+                  $COMPOSE logs api --tail=10 2>/dev/null || true
+                  echo "  --------------------------------"
+                fi
+
                 sleep 5
               done
-              echo "Health check failed after 90s"
               return 1
             }
 
-            # ── Snapshot current deployment ──────────────────────────────
-            echo "--- Snapshotting current src/ for rollback ---"
+            # ── Snapshot for rollback ────────────────────────────────────
             rm -rf src.backup
-            if [ -d src ]; then
-              cp -r src src.backup
-              echo "Snapshot saved to src.backup/"
-            else
-              echo "No existing src/ (first deploy)"
-            fi
+            [ -d src ] && cp -r src src.backup && echo "Snapshot saved" || echo "First deploy"
 
-            # ── Rollback function ────────────────────────────────────────
+            # ── Rollback ─────────────────────────────────────────────────
             rollback() {
-              echo ""
-              echo "DEPLOYMENT FAILED — starting rollback"
+              echo "DEPLOYMENT FAILED — rolling back"
+              echo "--- Final api logs ---"
+              $COMPOSE logs api --tail=30 2>/dev/null || true
 
               if [ ! -d src.backup ]; then
-                echo "No backup found — cannot rollback. Manual intervention required."
+                echo "No backup — cannot rollback"
                 exit 1
               fi
 
-              echo "Restoring src/ from snapshot..."
-              rm -rf src
-              cp -r src.backup src
-
-              echo "Rebuilding from previous version..."
+              rm -rf src && cp -r src.backup src
               $COMPOSE build --no-cache
               $COMPOSE up -d --scale worker=2 --remove-orphans
 
               if wait_for_health; then
-                echo "Rollback successful — previous version is live."
+                echo "Rollback successful"
               else
-                echo "Rollback also failed. Check logs:"
-                $COMPOSE logs --tail=50 api
+                echo "Rollback also failed — manual intervention required"
               fi
-
               exit 1
             }
 
             trap rollback ERR
 
-            # ── Build & start new version ────────────────────────────────
-            echo "--- Building new Docker image ---"
+            # ── Deploy ───────────────────────────────────────────────────
+            echo "--- Building ---"
             $COMPOSE build --no-cache
 
             echo "--- Starting containers ---"
             $COMPOSE up -d --scale worker=2 --remove-orphans
 
-            echo "--- Pruning old images ---"
             docker image prune -f
 
-            # ── Verify deployment ────────────────────────────────────────
+            # ── Verify ───────────────────────────────────────────────────
             if wait_for_health; then
               echo "Deployment successful! Commit: ${{ github.sha }}"
               rm -rf src.backup

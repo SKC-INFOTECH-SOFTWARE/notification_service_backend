@@ -1,70 +1,37 @@
 # ═══════════════════════════════════════════════════════════
-# Docker Build Test - Validates Dockerfile on PRs
+# Docker Build Test - Validates Dockerfile on PRs only
 # ═══════════════════════════════════════════════════════════
 
-name: Deploy to VPS
+name: Docker Build Test
 
 on:
-  push:
+  pull_request:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - "Dockerfile"
+      - "docker-compose.prod.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "tsconfig.json"
 
 jobs:
-  deploy:
+  docker-build:
+    name: Docker Build Test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy on VPS
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          command_timeout: 30m
-          script: |
-            set -e
-
-            echo "➡️ Moving to project directory"
-            cd ${{ secrets.APP_DIR }}
-
-            echo "➡️ Detecting app port"
-            APP_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
-            APP_PORT=${APP_PORT:-5000}
-
-            COMPOSE="docker-compose -f docker-compose.prod.yml"
-
-            echo "➡️ Creating backup"
-            rm -rf src.backup
-            [ -d src ] && cp -r src src.backup || true
-
-            rollback() {
-              echo "❌ Deployment failed — rolling back"
-              rm -rf src
-              cp -r src.backup src || true
-              $COMPOSE up -d --scale worker=2 --remove-orphans
-              exit 1
-            }
-
-            trap rollback ERR
-
-            echo "➡️ Pulling latest images"
-            $COMPOSE pull || true
-
-            echo "➡️ Starting containers"
-            $COMPOSE up -d --scale worker=2 --remove-orphans
-
-            echo "➡️ Cleaning old images"
-            docker image prune -f
-
-            echo "➡️ Waiting for health check"
-            for i in $(seq 1 15); do
-              if curl -sf http://localhost:$APP_PORT/health > /dev/null 2>&1; then
-                echo "✅ App is healthy"
-                rm -rf src.backup
-                exit 0
-              fi
-              sleep 5
-            done
-
-            rollback
+          context: .
+          push: false
+          tags: notification-service:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
