@@ -1,73 +1,155 @@
 # ═══════════════════════════════════════════════════════════
 # Deploy to VPS - Runs on push to main
 #
-# REQUIRED GITHUB SECRETS (add in repo Settings > Secrets):
-#
-#   VPS_HOST              - VPS IP or hostname (e.g. 167.99.0.1)
-#   VPS_USERNAME          - SSH user (e.g. root or deploy)
-#   VPS_SSH_KEY           - Private SSH key (full PEM content)
-#   VPS_PORT              - SSH port (e.g. 22)
-#   APP_DIR               - Project path on VPS (e.g. /root/notification-service)
-#
-# NOTE: .env file with all app credentials (MongoDB, Redis, JWT, etc.)
-#       must already exist on the VPS at APP_DIR/.env
+# REQUIRED GITHUB SECRETS:
+#   VPS_HOST       - VPS IP or hostname
+#   VPS_USERNAME   - SSH user (e.g. root)
+#   VPS_SSH_KEY    - Private SSH key (full PEM content)
+#   VPS_PORT       - SSH port (e.g. 22)
+#   APP_DIR        - Project path on VPS (e.g. /root/notification-service)
 #
 # ROLLBACK STRATEGY:
-#   - Before every deploy, the current src/ is snapshotted to src.backup/
-#   - If health check fails → backup is restored and containers are restarted
-#   - Rollback result is posted as a GitHub commit status
-# ═════════════════════════════════════════════════════════
+#   Before deploy → src/ is snapshotted to src.backup/
+#   Health check fails → backup restored, containers restarted from old image
+#   Backup deleted only after confirmed healthy deploy
+# ═══════════════════════════════════════════════════════════
 
-- name: Deploy on VPS
-  uses: appleboy/ssh-action@v1.2.0
-  with:
-    host: ${{ secrets.VPS_HOST }}
-    username: ${{ secrets.VPS_USERNAME }}
-    key: ${{ secrets.VPS_SSH_KEY }}
-    port: ${{ secrets.VPS_PORT }}
-    command_timeout: 30m
-    script: |
-      set -e
-      cd ${{ secrets.APP_DIR }}
+name: Deploy to VPS
 
-      APP_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
-      APP_PORT=${APP_PORT:-5000}
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-      COMPOSE="docker-compose -f docker-compose.prod.yml"
+jobs:
+  deploy:
+    name: Build & Deploy to VPS
+    runs-on: ubuntu-latest
 
-      wait_for_health() {
-        for i in $(seq 1 15); do
-          if curl -sf http://localhost:$APP_PORT/health > /dev/null 2>&1; then
-            return 0
-          fi
-          sleep 5
-        done
-        return 1
-      }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      rm -rf src.backup
-      [ -d src ] && cp -r src src.backup
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-      rollback() {
-        rm -rf src
-        cp -r src.backup src
-        $COMPOSE build --no-cache
-        $COMPOSE up -d --scale worker=2 --remove-orphans
-        exit 1
-      }
+      - name: Install dependencies
+        run: npm ci
 
-      trap rollback ERR
+      - name: TypeScript build
+        run: npm run build
 
-      docker pull mongo:7 || true
-      docker pull redis:7-alpine || true
+      - name: Verify build output
+        run: |
+          test -f dist/server.js && test -f dist/worker.js
+          echo "Build verified"
 
-      $COMPOSE build --no-cache
-      $COMPOSE up -d --scale worker=2 --remove-orphans
+      - name: Copy files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          source: "src/,package.json,package-lock.json,tsconfig.json,Dockerfile,docker-compose.prod.yml,.dockerignore"
+          target: ${{ secrets.APP_DIR }}
+          overwrite: true
+          strip_components: 0
 
-      docker image prune -f
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ${{ secrets.APP_DIR }}
 
-      if wait_for_health; then
-        rm -rf src.backup
-      else
-        rollback
-      fi
+            # ── Read port from .env ──────────────────────────────────────
+            APP_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
+            APP_PORT=${APP_PORT:-5000}
+
+            # ── Use docker compose v2 (plugin) — NOT docker-compose v1 ──
+            # v1 (docker-compose) has a ContainerConfig KeyError bug with
+            # newer Docker Engine versions. v2 is already installed as the
+            # Docker CLI plugin on any modern VPS.
+            COMPOSE="docker compose -f docker-compose.prod.yml"
+
+            # ── Health check helper ──────────────────────────────────────
+            wait_for_health() {
+              echo "Waiting for health check on port $APP_PORT..."
+              for i in $(seq 1 18); do
+                if curl -sf http://localhost:$APP_PORT/health > /dev/null 2>&1; then
+                  echo "Health check passed (attempt $i/18)"
+                  return 0
+                fi
+                echo "  attempt $i/18 — not ready, waiting 5s..."
+                sleep 5
+              done
+              echo "Health check failed after 90s"
+              return 1
+            }
+
+            # ── Snapshot current deployment ──────────────────────────────
+            echo "--- Snapshotting current src/ for rollback ---"
+            rm -rf src.backup
+            if [ -d src ]; then
+              cp -r src src.backup
+              echo "Snapshot saved to src.backup/"
+            else
+              echo "No existing src/ (first deploy)"
+            fi
+
+            # ── Rollback function ────────────────────────────────────────
+            rollback() {
+              echo ""
+              echo "DEPLOYMENT FAILED — starting rollback"
+
+              if [ ! -d src.backup ]; then
+                echo "No backup found — cannot rollback. Manual intervention required."
+                exit 1
+              fi
+
+              echo "Restoring src/ from snapshot..."
+              rm -rf src
+              cp -r src.backup src
+
+              echo "Rebuilding from previous version..."
+              $COMPOSE build --no-cache
+              $COMPOSE up -d --scale worker=2 --remove-orphans
+
+              if wait_for_health; then
+                echo "Rollback successful — previous version is live."
+              else
+                echo "Rollback also failed. Check logs:"
+                $COMPOSE logs --tail=50 api
+              fi
+
+              exit 1
+            }
+
+            trap rollback ERR
+
+            # ── Build & start new version ────────────────────────────────
+            echo "--- Building new Docker image ---"
+            $COMPOSE build --no-cache
+
+            echo "--- Starting containers ---"
+            $COMPOSE up -d --scale worker=2 --remove-orphans
+
+            echo "--- Pruning old images ---"
+            docker image prune -f
+
+            # ── Verify deployment ────────────────────────────────────────
+            if wait_for_health; then
+              echo "Deployment successful! Commit: ${{ github.sha }}"
+              rm -rf src.backup
+            else
+              rollback
+            fi
