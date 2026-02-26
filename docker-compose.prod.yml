@@ -1,16 +1,6 @@
-# ═══════════════════════════════════════════════════════════
-# PRODUCTION
-#
-# Usage:
-#   docker compose -f docker-compose.prod.yml up -d
-#   docker compose -f docker-compose.prod.yml up -d --scale worker=3
-#
-# First-time seed:
-#   docker compose -f docker-compose.prod.yml --profile setup run --rm seed
-# ═══════════════════════════════════════════════════════════
+version: "3.9"
 
 services:
-
   # ── MongoDB ──
   mongo:
     image: mongo:7
@@ -20,7 +10,7 @@ services:
       - mongo_data:/data/db
       - mongo_config:/data/configdb
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping').ok"]
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/27017"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -33,16 +23,16 @@ services:
     network_mode: host
     command: >
       redis-server
-      --port 6390
+      --port 6382
       --maxmemory 500mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6382", "ping"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
 
   # ── API Server ──
@@ -60,13 +50,14 @@ services:
     environment:
       - NODE_ENV=production
       - MONGODB_URI=mongodb://localhost:27017/notification_service
-      - REDIS_URL=redis://localhost:6390
+      - REDIS_URL=redis://localhost:6382
+      - PORT=5000
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
       interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # ── Background Worker ──
   worker:
@@ -84,15 +75,13 @@ services:
     environment:
       - NODE_ENV=production
       - MONGODB_URI=mongodb://localhost:27017/notification_service
-      - REDIS_URL=redis://localhost:6390
-    deploy:
-      replicas: 2
+      - REDIS_URL=redis://localhost:6382
 
   # ── Seed Admin User (run once) ──
   seed:
     build: .
     command: ["node", "dist/scripts/seed-admin.js"]
-    restart: no
+    restart: "no"
     network_mode: host
     depends_on:
       mongo:
@@ -107,8 +96,5 @@ services:
 
 volumes:
   mongo_data:
-    driver: local
   mongo_config:
-    driver: local
   redis_data:
-    driver: local
