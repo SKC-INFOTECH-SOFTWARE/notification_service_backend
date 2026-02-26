@@ -16,7 +16,7 @@
 #   - Before every deploy, the current src/ is snapshotted to src.backup/
 #   - If health check fails → backup is restored and containers are restarted
 #   - Rollback result is posted as a GitHub commit status
-# ═══════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 
 - name: Deploy on VPS
   uses: appleboy/ssh-action@v1.2.0
