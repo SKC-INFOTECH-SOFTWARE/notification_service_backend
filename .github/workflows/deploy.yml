@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Job 1: Build & Push ─────────────────────────────────
+  # ── Job 1: Build & Push ──────────────────────────────────────
   build-and-push:
     name: Build Image & Push to Docker Hub
     runs-on: ubuntu-latest
@@ -40,27 +40,32 @@ jobs:
     steps:
       - name: SSH and Deploy
         uses: appleboy/ssh-action@v1.2.0
+        # 🟢 YAHAN FIX HAI: Action ko env variables dena zaroori hai
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          # Yeh envs upar wale 'env' block se values uthayenge
           envs: DOCKER_USERNAME,DOCKER_PASSWORD
           script: |
             set -e
             cd ${{ secrets.APP_DIR }}
 
-            # Variables ko explicitly export karein
+            # Variables automatically inject ho jayenge
             export DOCKER_USERNAME="${DOCKER_USERNAME}"
             export DOCKER_PASSWORD="${DOCKER_PASSWORD}"
 
-            # 1. Check if password is empty (Prevents Non-TTY error)
+            # 1. Check if password is empty
             if [ -z "$DOCKER_PASSWORD" ]; then
               echo "❌ ERROR: DOCKER_PASSWORD is empty! GitHub Secrets check karein."
               exit 1
             fi
 
-            # 2. Docker Login (Secure pipeline login)
+            # 2. Docker Login
             echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
             # 3. Pull and Up
@@ -74,7 +79,6 @@ jobs:
             echo "--- Verifying Deployment ---"
             sleep 15
 
-            # Agar app crash hoti hai, toh yeh if-condition logs print karegi
             if ! curl -f http://localhost:5000/health; then
               echo "❌ FAILED: App is crashing or not responding on Port 5000."
               echo "========== API CONTAINER LOGS =========="
@@ -83,6 +87,6 @@ jobs:
               exit 1
             fi
 
-            # 5. Cleanup (Disk space management)
+            # 5. Cleanup
             echo "✅ Health check passed. Cleaning up old images..."
             docker image prune -f
