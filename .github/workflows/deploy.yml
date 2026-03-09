@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Job 1: Build & Push ──────────────────────────────────────
+  # ── Job 1: Build & Push ────────────────────────────────────
   build-and-push:
     name: Build Image & Push to Docker Hub
     runs-on: ubuntu-latest
