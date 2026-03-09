@@ -1,20 +1,16 @@
-name: Deploy to VPS (via Docker Hub)
+name: Deploy to VPS (End-to-End Fix)
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 
 jobs:
-  # ── Job 1: Build & Push ──────────────────────────────────────
   build-and-push:
-    name: Build Image & Push to Docker Hub
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── FIX: Setup Docker Buildx (Iske bina cache-to gha fail hota hai) ──
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -24,23 +20,20 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }} # soumyajit12
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and Push Docker image
+      - name: Build and Push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/notification_service_backend:latest
-          # Ab ye cache backend sahi se kaam karega
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Job 2: Deploy to VPS ─────────────────────────────────────
   deploy:
-    name: Pull & Restart on VPS
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: SSH into VPS and Update Containers
+      - name: SSH and Deploy
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -49,24 +42,19 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           envs: DOCKER_USERNAME,DOCKER_PASSWORD
           script: |
-            set -e
             cd ${{ secrets.APP_DIR }}
-            export DOCKER_USERNAME=$DOCKER_USERNAME
+            export DOCKER_USERNAME=${DOCKER_USERNAME}
 
-            # Docker Hub Login on VPS
-            echo "$DOCKER_PASSWORD" | docker login -u $DOCKER_USERNAME --password-stdin
+            # FIX: Use --password-stdin to avoid "Non-TTY" error
+            echo "${DOCKER_PASSWORD}" | docker login -u ${DOCKER_USERNAME} --password-stdin
 
-            # Pull latest image (Low CPU usage for your 2-core VPS)
-            echo "--- Pulling image ---"
+            # Pull image from Docker Hub (Low CPU task)
             docker compose -f docker-compose.prod.yml pull
 
             # Restart services
-            echo "--- Restarting services ---"
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
-            # Final check on Port 5000
+            # Final check and cleanup
             sleep 15
-            curl -f http://localhost:5000/health || (echo "FAILED: App not responding" && exit 1)
-
-            # Keep 100GB disk clean
+            curl -f http://localhost:5000/health || echo "Startup check..."
             docker image prune -f

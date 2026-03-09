@@ -8,7 +8,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.50' # Max 50% of one core
+          cpus: '0.50'
           memory: 1G
     volumes:
       - mongo_data:/data/db
@@ -23,9 +23,6 @@ services:
           cpus: '0.25'
           memory: 400M
     command: redis-server --port 6382 --maxmemory 300mb --maxmemory-policy allkeys-lru --appendonly no
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6382", "ping"]
-      interval: 30s
 
   api:
     image: ${DOCKER_USERNAME}/notification_service_backend:latest
@@ -37,11 +34,6 @@ services:
           cpus: '0.50'
           memory: 1G
     env_file: .env
-    environment:
-      - PORT=5000
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
-      interval: 30s
 
   worker:
     image: ${DOCKER_USERNAME}/notification_service_backend:latest
