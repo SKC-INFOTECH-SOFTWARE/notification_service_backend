@@ -1,17 +1,24 @@
+version: '3.8'
+
 services:
   # ── MongoDB ──
   mongo:
     image: mongo:7
     restart: always
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50' # Limit to 50% of one CPU core
+          memory: 1G
     volumes:
       - mongo_data:/data/db
       - mongo_config:/data/configdb
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/27017"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s # Relaxed from 10s to save CPU
+      timeout: 10s
+      retries: 3
       start_period: 30s
 
   # ── Redis ──
@@ -19,25 +26,35 @@ services:
     image: redis:7-alpine
     restart: always
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25' # Redis is single-threaded; 25% is plenty for a notification broker
+          memory: 600M
     command: >
       redis-server
       --port 6382
       --maxmemory 500mb
-      --maxmemory-policy noeviction
-      --appendonly yes
+      --maxmemory-policy allkeys-lru
+      --appendonly no
     volumes:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6382", "ping"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 3
 
   # ── API Server ──
   api:
     build: .
     restart: always
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 1G
     depends_on:
       mongo:
         condition: service_healthy
@@ -52,9 +69,9 @@ services:
       - PORT=5000
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
-      interval: 15s
+      interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 3
       start_period: 30s
 
   # ── Background Worker ──
@@ -63,6 +80,11 @@ services:
     command: ["node", "dist/worker.js"]
     restart: always
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 1G
     depends_on:
       mongo:
         condition: service_healthy
