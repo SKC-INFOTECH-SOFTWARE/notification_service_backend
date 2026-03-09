@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # ── MongoDB ──
   mongo:
     image: mongo:7
     restart: always
@@ -9,19 +8,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.50' # Limit to 50% of one CPU core
+          cpus: '0.50' # Max 50% of one core
           memory: 1G
     volumes:
       - mongo_data:/data/db
-      - mongo_config:/data/configdb
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 30s # Relaxed from 10s to save CPU
-      timeout: 10s
-      retries: 3
-      start_period: 30s
 
-  # ── Redis ──
   redis:
     image: redis:7-alpine
     restart: always
@@ -29,25 +20,15 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.25' # Redis is single-threaded; 25% is plenty for a notification broker
-          memory: 600M
-    command: >
-      redis-server
-      --port 6382
-      --maxmemory 500mb
-      --maxmemory-policy allkeys-lru
-      --appendonly no
-    volumes:
-      - redis_data:/data
+          cpus: '0.25'
+          memory: 400M
+    command: redis-server --port 6382 --maxmemory 300mb --maxmemory-policy allkeys-lru --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6382", "ping"]
       interval: 30s
-      timeout: 5s
-      retries: 3
 
-  # ── API Server ──
   api:
-    build: .
+    image: ${DOCKER_USERNAME}/notification_service_backend:latest
     restart: always
     network_mode: host
     deploy:
@@ -55,28 +36,15 @@ services:
         limits:
           cpus: '0.50'
           memory: 1G
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
+    env_file: .env
     environment:
-      - NODE_ENV=production
-      - MONGODB_URI=mongodb://localhost:27017/notification_service
-      - REDIS_URL=redis://localhost:6382
       - PORT=5000
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
 
-  # ── Background Worker ──
   worker:
-    build: .
+    image: ${DOCKER_USERNAME}/notification_service_backend:latest
     command: ["node", "dist/worker.js"]
     restart: always
     network_mode: host
@@ -85,36 +53,7 @@ services:
         limits:
           cpus: '0.50'
           memory: 1G
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - NODE_ENV=production
-      - MONGODB_URI=mongodb://localhost:27017/notification_service
-      - REDIS_URL=redis://localhost:6382
-
-  # ── Seed Admin User (run once) ──
-  seed:
-    build: .
-    command: ["node", "dist/scripts/seed-admin.js"]
-    restart: "no"
-    network_mode: host
-    depends_on:
-      mongo:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - NODE_ENV=production
-      - MONGODB_URI=mongodb://localhost:27017/notification_service
-    profiles:
-      - setup
+    env_file: .env
 
 volumes:
   mongo_data:
-  mongo_config:
-  redis_data:

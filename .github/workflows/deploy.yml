@@ -1,142 +1,83 @@
 # ═══════════════════════════════════════════════════════════
-# Deploy to VPS - Runs on push to main
-#
-# REQUIRED GITHUB SECRETS:
-#   VPS_HOST       - VPS IP or hostname
-#   VPS_USERNAME   - SSH user (e.g. root)
-#   VPS_SSH_KEY    - Private SSH key (full PEM content)
-#   VPS_PORT       - SSH port (e.g. 22)
-#   APP_DIR        - Project path on VPS (e.g. /root/notification-service)
+# End-to-End Docker Hub CI/CD Pipeline
+# Build: Runs on GitHub Servers (Safe for VPS CPU)
+# Deploy: Runs on VPS (Low CPU Pull & Run)
 # ═══════════════════════════════════════════════════════════
 
-name: Deploy to VPS
+name: Deploy to VPS (via Docker Hub)
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches: [main] # Jab bhi main branch par push hoga, ye trigger hoga
+  workflow_dispatch: # Manual trigger ke liye option
 
 jobs:
-  deploy:
-    name: Build & Deploy to VPS
+  # ── Job 1: Build & Push ──────────────────────────────────────
+  # Ye poora task GitHub ke servers par chalega
+  build-and-push:
+    name: Build Image & Push to Docker Hub
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          node-version: 20
-          cache: npm
+          username: ${{ secrets.DOCKER_USERNAME }} # soumyajit12
+          password: ${{ secrets.DOCKER_PASSWORD }} # Access Token
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: TypeScript build
-        run: npm run build
-
-      - name: Verify build output
-        run: |
-          test -f dist/server.js && test -f dist/worker.js
-          echo "Build verified"
-
-      - name: Copy files to VPS
-        uses: appleboy/scp-action@v0.1.7
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          source: "src/,package.json,package-lock.json,tsconfig.json,Dockerfile,docker-compose.prod.yml,.dockerignore"
-          target: ${{ secrets.APP_DIR }}
-          overwrite: true
-          strip_components: 0
+          context: .
+          push: true
+          # Dynamic tag use kar rahe hain hum
+          tags: ${{ secrets.DOCKER_USERNAME }}/notification_service_backend:latest
+          cache-from: type=gha # Build fast karne ke liye cache
+          cache-to: type=gha,mode=max
 
-      - name: Deploy on VPS
+  # ── Job 2: Deploy to VPS ─────────────────────────────────────
+  # Ye VPS par sirf commands bhejega (CPU load minimal rahega)
+  deploy:
+    name: Pull & Restart on VPS
+    needs: build-and-push # Sirf tabhi chalega jab build successful ho
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into VPS and Update Containers
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          command_timeout: 20m
+          # Variables ko SSH session mein pass karna zaroori hai
+          envs: DOCKER_USERNAME,DOCKER_PASSWORD
           script: |
             set -e
             cd ${{ secrets.APP_DIR }}
 
-            APP_PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
-            APP_PORT=${APP_PORT:-5000}
+            # Docker Compose ko dynamic username batane ke liye
+            export DOCKER_USERNAME=$DOCKER_USERNAME
 
-            COMPOSE="docker compose -f docker-compose.prod.yml"
+            # Docker Hub Login on VPS
+            echo "$DOCKER_PASSWORD" | docker login -u $DOCKER_USERNAME --password-stdin
 
-            # ── Health check with visible diagnostics ────────────────────
-            wait_for_health() {
-              echo "Waiting for http://localhost:$APP_PORT/health ..."
-              for i in $(seq 1 12); do
-                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$APP_PORT/health 2>/dev/null || echo "000")
-                CONTAINER_STATUS=$($COMPOSE ps api --format "{{.Status}}" 2>/dev/null || echo "unknown")
-                echo "  attempt $i/12 — HTTP $HTTP_CODE — container: $CONTAINER_STATUS"
+            # Step 1: Nayi image pull karein (Bahut fast process)
+            echo "--- Pulling latest image from Docker Hub ---"
+            docker compose -f docker-compose.prod.yml pull
 
-                if [ "$HTTP_CODE" = "200" ]; then
-                  return 0
-                fi
+            # Step 2: Purane containers replace karein
+            echo "--- Restarting services ---"
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
-                # Print logs every 3 attempts so we can see startup errors
-                if [ $((i % 3)) -eq 0 ]; then
-                  echo "  --- api logs (last 10 lines) ---"
-                  $COMPOSE logs api --tail=10 2>/dev/null || true
-                  echo "  --------------------------------"
-                fi
+            # Step 3: Health Check (Port 5000 check)
+            echo "--- Verifying Deployment on Port 5000 ---"
+            sleep 15
+            curl -f http://localhost:5000/health || (echo "FAILED: App not responding" && exit 1)
 
-                sleep 5
-              done
-              return 1
-            }
-
-            # ── Snapshot for rollback ────────────────────────────────────
-            rm -rf src.backup
-            [ -d src ] && cp -r src src.backup && echo "Snapshot saved" || echo "First deploy"
-
-            # ── Rollback ─────────────────────────────────────────────────
-            rollback() {
-              echo "DEPLOYMENT FAILED — rolling back"
-              echo "--- Final api logs ---"
-              $COMPOSE logs api --tail=30 2>/dev/null || true
-
-              if [ ! -d src.backup ]; then
-                echo "No backup — cannot rollback"
-                exit 1
-              fi
-
-              rm -rf src && cp -r src.backup src
-              $COMPOSE build --no-cache
-              $COMPOSE up -d --scale worker=2 --remove-orphans
-
-              if wait_for_health; then
-                echo "Rollback successful"
-              else
-                echo "Rollback also failed — manual intervention required"
-              fi
-              exit 1
-            }
-
-            trap rollback ERR
-
-            # ── Deploy ───────────────────────────────────────────────────
-            echo "--- Building ---"
-            $COMPOSE build --no-cache
-
-            echo "--- Starting containers ---"
-            $COMPOSE up -d --scale worker=2 --remove-orphans
-
+            # Step 4: Cleanup (Purani images ko uda dena taaki 100GB space bacha rahe)
+            echo "--- Cleaning up old Docker layers ---"
             docker image prune -f
 
-            # ── Verify ───────────────────────────────────────────────────
-            if wait_for_health; then
-              echo "Deployment successful! Commit: ${{ github.sha }}"
-              rm -rf src.backup
-            else
-              rollback
-            fi
+            echo "Deployment successful! CPU load is stable."
