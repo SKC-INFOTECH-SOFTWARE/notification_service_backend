@@ -1,4 +1,4 @@
-name: Deploy to VPS (End-to-End Fix)
+name: Deploy to VPS
 
 on:
   push:
@@ -6,87 +6,47 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── Job 1: Build & Push ──────────────────────────────────────
-  build-and-push:
-    name: Build Image & Push to Docker Hub
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and Push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/notification_service_backend:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ── Job 2: Deploy to VPS ─────────────────────────────────────
   deploy:
-    name: Pull & Restart on VPS
-    needs: build-and-push
+    name: Build & Restart on VPS
     runs-on: ubuntu-latest
     steps:
       - name: SSH and Deploy
         uses: appleboy/ssh-action@v1.2.0
-        # 🟢 YAHAN FIX HAI: Action ko env variables dena zaroori hai
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          # Yeh envs upar wale 'env' block se values uthayenge
-          envs: DOCKER_USERNAME,DOCKER_PASSWORD
+          command_timeout: 20m
           script: |
             set -e
             cd ${{ secrets.APP_DIR }}
 
-            # Variables automatically inject ho jayenge
-            export DOCKER_USERNAME="${DOCKER_USERNAME}"
-            export DOCKER_PASSWORD="${DOCKER_PASSWORD}"
+            # 1. Latest code khinch lo (.env untracked hai, safe rehta hai)
+            echo "--- Syncing repo ---"
+            git fetch origin main
+            git reset --hard origin/main
 
-            # 1. Check if password is empty
-            if [ -z "$DOCKER_PASSWORD" ]; then
-              echo "❌ ERROR: DOCKER_PASSWORD is empty! GitHub Secrets check karein."
-              exit 1
-            fi
+            # 2. VPS pe hi image build karo
+            echo "--- Building image on VPS ---"
+            docker compose -f docker-compose.prod.yml build
 
-            # 2. Docker Login
-            echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-
-            # 3. Pull and Up
-            echo "--- Pulling latest image ---"
-            docker compose -f docker-compose.prod.yml pull
-
+            # 3. Restart
             echo "--- Restarting services ---"
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
-            # 4. Wait and Verify
+            # 4. Verify
             echo "--- Verifying Deployment ---"
-            sleep 15
+            sleep 20
 
             if ! curl -f http://localhost:5000/health; then
-              echo "❌ FAILED: App is crashing or not responding on Port 5000."
+              echo "FAILED: App is crashing or not responding on Port 5000."
               echo "========== API CONTAINER LOGS =========="
               docker compose -f docker-compose.prod.yml logs api --tail=50
               echo "========================================"
               exit 1
             fi
 
-            # 5. Cleanup
-            echo "✅ Health check passed. Cleaning up old images..."
+            # 5. Cleanup — dangling build layers
+            echo "Health check passed. Cleaning up..."
             docker image prune -f

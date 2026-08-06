@@ -16,7 +16,19 @@
       "Bash(docker compose build:*)",
       "Bash(docker compose up:*)",
       "Bash(node -e:*)",
-      "Bash(docker compose restart:*)"
+      "Bash(docker compose restart:*)",
+      "Bash(tar -tzf mongo_backup.tar.gz)",
+      "Read(//d/notification/claude/**)",
+      "Bash(mkdir -p /c/Users/CITY/AppData/Local/Temp/claude/D--notification/6beb5930-dff2-453f-85ad-a86fde677083/scratchpad/bk)",
+      "Bash(tar -xzf /d/notification/mongo_backup.tar.gz -C /c/Users/CITY/AppData/Local/Temp/claude/D--notification/6beb5930-dff2-453f-85ad-a86fde677083/scratchpad/bk notification_backend_mongo_data/_data/WiredTiger)",
+      "Read(//c/Users/CITY/AppData/Local/Temp/claude/D--notification/6beb5930-dff2-453f-85ad-a86fde677083/scratchpad/bk/notification_backend_mongo_data/_data/**)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Bash(docker info *)",
+      "Bash(tar -tvzf mongo_backup.tar.gz)",
+      "Bash(awk '{print $3, $6}')",
+      "Bash(python -c \"import yaml,sys; yaml.safe_load\\(open\\('.github/workflows/deploy.yml'\\)\\); print\\('DEPLOY.YML OK'\\)\")",
+      "Bash(grep -c \"^\\\\.env$\")"
     ]
   }
 }

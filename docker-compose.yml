@@ -40,7 +40,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-5000}:${PORT:-5000}"
     depends_on:
       mongo:
         condition: service_healthy
@@ -52,7 +52,7 @@ services:
       - MONGODB_URI=mongodb://mongo:27017/notification_service
       - REDIS_URL=redis://redis:6379
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:${PORT:-5000}/health"]
       interval: 15s
       timeout: 5s
       retries: 3

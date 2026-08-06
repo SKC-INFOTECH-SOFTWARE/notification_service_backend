@@ -1,51 +1,138 @@
-version: '3.8'
+# ═══════════════════════════════════════════════════════════
+# PRODUCTION — VPS deployment (image is built on the VPS itself)
+#
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml --profile setup run --rm seed
+#
+# api/worker/seed share one image tag, so `build` compiles once
+# and the other two reuse it from cache.
+#
+# mongo/redis are on a private bridge network — not reachable
+# from the internet. Only the API publishes a port.
+# ═══════════════════════════════════════════════════════════
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
   mongo:
     image: mongo:7
     restart: always
-    network_mode: host
+    logging: *default-logging
     deploy:
       resources:
         limits:
-          cpus: '0.50'
+          cpus: "0.50"
           memory: 1G
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
 
   redis:
     image: redis:7-alpine
     restart: always
-    network_mode: host
+    logging: *default-logging
     deploy:
       resources:
         limits:
-          cpus: '0.25'
+          cpus: "0.25"
           memory: 400M
-    command: redis-server --port 6382 --maxmemory 300mb --maxmemory-policy allkeys-lru --appendonly no
+    # noeviction is required by BullMQ — allkeys-lru silently drops queued jobs
+    command: >
+      redis-server
+      --maxmemory 300mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   api:
-    image: ${DOCKER_USERNAME}/notification_service_backend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notification-service:local
     restart: always
-    network_mode: host
+    logging: *default-logging
     deploy:
       resources:
         limits:
-          cpus: '0.50'
+          cpus: "0.50"
           memory: 1G
+    # API_BIND=127.0.0.1 in .env once nginx fronts this (keeps port off the public IP)
+    ports:
+      - "${API_BIND:-0.0.0.0}:${PORT:-5000}:${PORT:-5000}"
     env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/notification_service
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD", "wget", "-q", "--spider", "http://localhost:${PORT:-5000}/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
-    image: ${DOCKER_USERNAME}/notification_service_backend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notification-service:local
     command: ["node", "dist/worker.js"]
     restart: always
-    network_mode: host
+    logging: *default-logging
     deploy:
       resources:
         limits:
-          cpus: '0.50'
+          cpus: "0.50"
           memory: 1G
     env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/notification_service
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── One-shot admin seed (profile keeps it out of `up -d`) ──
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: notification-service:local
+    command: ["node", "dist/scripts/seed-admin.js"]
+    restart: "no"
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/notification_service
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongo:
+        condition: service_healthy
+    profiles:
+      - setup
 
 volumes:
   mongo_data:
+  redis_data:

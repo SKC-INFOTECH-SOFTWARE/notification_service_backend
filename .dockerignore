@@ -3,3 +3,5 @@ dist
 .env
 *.log
 .git
+*.tar.gz
+*.archive.gz
